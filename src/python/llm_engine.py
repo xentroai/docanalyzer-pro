@@ -5,7 +5,7 @@ from langchain_core.prompts import PromptTemplate
 class DocumentBrain:
     def __init__(self):
         # 🔑 ENTER YOUR API KEY HERE
-        self.api_key = "AIzaSyB24EcEbSo44dJaUMuHsZWPDwJWGMLV25Y"
+        self.api_key = "your google api key "
         
         # We use temperature=0.0 for maximum precision (less creativity, more accuracy)
         self.llm = ChatGoogleGenerativeAI(
