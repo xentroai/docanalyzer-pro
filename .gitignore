@@ -1,0 +1,11 @@
+.venv/
+build/
+output/
+__pycache__/
+*.pdf
+*.jpg
+*.png
+*.csv
+docproc
+xentro_db/
+xentro_vectors/
