@@ -2,7 +2,7 @@
 
 **High-Performance Document Intelligence Platform by Xentro AI**
 
-![Version](https://img.shields.io/badge/Version-v2.2.0-blue) ![Status](https://img.shields.io/badge/Status-Production%20Ready-success) ![Tech](https://img.shields.io/badge/Stack-C%2B%2B17%20%7C%20Python%20%7C%20RAG-orange)
+![Version](https://img.shields.io/badge/Version-v3.0.0-blue) ![Status](https://img.shields.io/badge/Status-Production%20Ready-success) ![Tech](https://img.shields.io/badge/Stack-C%2B%2B17%20%7C%20Python%20%7C%20RAG-orange)
 
 DocAnalyzer Pro is a **hybrid AI platform** designed to automate complex financial document processing. Unlike standard wrappers, it uses a **custom-compiled C++ Vision Engine** to pre-process low-quality images (deskewing, binarization, upscaling) before routing data to a **Retrieval-Augmented Generation (RAG)** pipeline for semantic analysis.
 
