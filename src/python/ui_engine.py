@@ -4,148 +4,100 @@ class UIEngine:
     @staticmethod
     def setup_page():
         """
-        Injects reliable Custom CSS (No external script dependency).
+        Injects CSS for a WIDER Sidebar and DEEPER Colors.
         """
         st.markdown("""
             <style>
-                /* 1. APP BACKGROUND & FONT */
+                /* --- 1. GLOBAL THEME --- */
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+                
                 .stApp {
-                    background-color: #0e1117;
+                    background-color: #ffffff;
                     font-family: 'Inter', sans-serif;
                 }
                 
-                /* 2. CARD STYLING (The Metrics) */
-                .kpi-card {
-                    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-                    border: 1px solid #334155;
+                /* --- 2. SIDEBAR CONFIGURATION --- */
+                /* FORCE SIDEBAR WIDTH & COLOR */
+                section[data-testid="stSidebar"] {
+                    width: 300px !important; /* WIDER SIDEBAR */
+                    min-width: 300px !important;
+                    background-color: #0f0a1e !important; /* DEEP RICH PURPLE */
+                    border-right: 1px solid #2b2638;
+                }
+                
+                /* Sidebar Text Colors */
+                [data-testid="stSidebar"] * {
+                    color: #e0e7ff !important; /* Bright White-Blue Text */
+                }
+                
+                /* --- 3. METRIC CARDS --- */
+                div[data-testid="stMetric"] {
+                    background-color: #ffffff;
+                    border: 1px solid #e5e7eb;
                     border-radius: 12px;
-                    padding: 20px;
-                    margin-bottom: 15px;
-                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-                    transition: transform 0.2s;
-                }
-                .kpi-card:hover {
-                    transform: translateY(-5px);
-                    border-color: #60a5fa;
-                }
-                .kpi-title {
-                    color: #94a3b8;
-                    font-size: 0.8rem;
-                    text-transform: uppercase;
-                    letter-spacing: 0.05em;
-                    font-weight: 600;
-                }
-                .kpi-value {
-                    color: #ffffff;
-                    font-size: 1.8rem;
-                    font-weight: 700;
-                    margin: 8px 0;
-                }
-                .kpi-sub {
-                    font-size: 0.75rem;
-                    color: #64748b;
-                }
-
-                /* 3. EMPTY STATE (Fixing the Giant Cloud Bug) */
-                .empty-state-container {
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 40px;
-                    background-color: rgba(30, 41, 59, 0.5);
-                    border: 2px dashed #475569;
-                    border-radius: 16px;
-                    margin-top: 20px;
-                    text-align: center;
-                }
-                .empty-icon {
-                    width: 64px;  /* FORCE SIZE */
-                    height: 64px; /* FORCE SIZE */
-                    color: #60a5fa;
-                    margin-bottom: 20px;
-                }
-                .empty-title {
-                    color: white;
-                    font-size: 1.25rem;
-                    font-weight: 600;
-                    margin-bottom: 8px;
-                }
-                .empty-desc {
-                    color: #94a3b8;
-                    font-size: 0.9rem;
-                    max-width: 300px;
-                }
-
-                /* 4. ERROR TOAST */
-                .error-box {
-                    background-color: #450a0a;
-                    border-left: 4px solid #ef4444;
                     padding: 16px;
-                    border-radius: 0 8px 8px 0;
-                    margin-bottom: 16px;
+                    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
                 }
-                .error-title {
-                    color: #fca5a5;
+                
+                /* --- 4. CHAT BUBBLES --- */
+                .chat-user {
+                    background-color: #f3f4f6;
+                    color: #1f2937;
+                    padding: 14px 18px;
+                    border-radius: 12px 12px 0px 12px;
+                    margin: 8px 0;
+                    text-align: right;
+                    float: right;
+                    clear: both;
+                    max-width: 80%;
+                    font-size: 15px;
+                }
+                .chat-ai {
+                    background-color: #ffffff;
+                    color: #1f2937;
+                    padding: 14px 18px;
+                    border-radius: 12px 12px 12px 0px;
+                    margin: 8px 0;
+                    border: 1px solid #e5e7eb;
+                    border-left: 4px solid #8b5cf6;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+                    float: left;
+                    clear: both;
+                    max-width: 80%;
+                    font-size: 15px;
+                }
+                
+                /* --- 5. BUTTONS --- */
+                div.stButton > button {
+                    background-color: #8b5cf6;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
                     font-weight: 600;
-                    font-size: 0.9rem;
+                    padding: 0.6rem 1.2rem;
+                    font-size: 16px;
+                    transition: all 0.2s;
                 }
-                .error-msg {
-                    color: #fee2e2;
-                    font-size: 0.85rem;
-                    margin-top: 4px;
+                div.stButton > button:hover {
+                    background-color: #7c3aed;
+                    transform: translateY(-2px);
+                    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
                 }
             </style>
         """, unsafe_allow_html=True)
 
     @staticmethod
-    def styled_card(title, value, subtext, icon="📊", color="blue"):
-        """
-        Renders a metric card using the CSS classes above.
-        """
-        html = f"""
-        <div class="kpi-card">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span class="kpi-title">{title}</span>
-                <span style="font-size: 1.5rem;">{icon}</span>
+    def render_empty_state(title="No documents yet", subtitle="Upload a file to get started"):
+        st.markdown(f"""
+        <div style="text-align: center; padding: 80px 20px;">
+            <div style="display: inline-flex; align-items: center; justify-content: center; width: 90px; height: 90px; background-color: #f5f3ff; border-radius: 50%; margin-bottom: 24px;">
+                <svg width="45" height="45" fill="none" stroke="#8b5cf6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path></svg>
             </div>
-            <div class="kpi-value">{value}</div>
-            <div class="kpi-sub">{subtext}</div>
+            <h3 style="font-size: 1.8rem; font-weight: 700; color: #111827; margin-bottom: 10px;">{title}</h3>
+            <p style="color: #6b7280; font-size: 1.1rem;">{subtitle}</p>
         </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
-
+        """, unsafe_allow_html=True)
+    
     @staticmethod
-    def render_empty_state():
-        """
-        Renders the upload prompt with a FIXED SIZE icon.
-        """
-        html = """
-        <div class="empty-state-container">
-            <svg class="empty-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="64" height="64">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-            </svg>
-            <div class="empty-title">Ready for Analysis</div>
-            <div class="empty-desc">
-                Upload a document to activate the Neural Engine.
-                <br>Supported: PDF, JPG, PNG
-            </div>
-        </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
-
-    @staticmethod
-    def render_error_toast(title, message, details=None):
-        """
-        Renders a red error box.
-        """
-        detail_html = f'<div style="margin-top:8px; font-family:monospace; font-size:0.75rem; color:#fecaca;">{details}</div>' if details else ''
-        
-        html = f"""
-        <div class="error-box">
-            <div class="error-title">{title}</div>
-            <div class="error-msg">{message}</div>
-            {detail_html}
-        </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
+    def render_error_toast(title, message):
+        st.error(f"**{title}**: {message}")

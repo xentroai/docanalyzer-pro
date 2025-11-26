@@ -1,29 +1,31 @@
 import streamlit as st
-import subprocess
+import pandas as pd
 import os
 import json
-import pandas as pd
-import altair as alt
+import time
 import hashlib
+import subprocess
 import psutil
 import re
-import concurrent.futures
 from datetime import datetime
 from llm_engine import DocumentBrain
 from db_engine import DatabaseEngine
 from ui_engine import UIEngine
+from streamlit_option_menu import option_menu
 
-# 1. Page Configuration
-st.set_page_config(page_title="Xentro DocAnalyzer Pro", page_icon="🧠", layout="wide")
+# 1. CONFIG
+st.set_page_config(page_title="Xentro Workspace", page_icon="⚡", layout="wide")
+UIEngine.setup_page()
 
-# 2. Session State
-if 'processed_data' not in st.session_state: st.session_state['processed_data'] = None
+# 2. SESSION STATE
+if 'page' not in st.session_state: st.session_state['page'] = "Documents"
 if 'chat_history' not in st.session_state: st.session_state['chat_history'] = []
 if 'active_filename' not in st.session_state: st.session_state['active_filename'] = None
-if 'batch_results' not in st.session_state: st.session_state['batch_results'] = []
-if 'theme_mode' not in st.session_state: st.session_state['theme_mode'] = 'dark'
 
 # --- HELPERS ---
+def get_file_hash(file_bytes):
+    return hashlib.md5(file_bytes).hexdigest()
+
 def safe_float(val):
     if val is None: return 0.0
     try:
@@ -32,432 +34,266 @@ def safe_float(val):
         return float(clean_str)
     except ValueError: return 0.0
 
-def smart_rename_file(original_path, ai_data):
-    try:
-        vendor = ai_data.get('vendor', 'Unknown').replace(" ", "")
-        vendor = re.sub(r'[^A-Za-z0-9]', '', vendor)[:15] 
-        doc_type = ai_data.get('type', 'DOC').upper()
-        date_str = ai_data.get('date', datetime.now().strftime('%Y-%m-%d'))
-        if len(date_str) < 8: date_str = datetime.now().strftime('%Y-%m-%d')
-
-        dir_name = os.path.dirname(original_path)
-        ext = os.path.splitext(original_path)[1]
-        new_filename = f"{date_str}_{vendor}_{doc_type}{ext}"
-        new_path = os.path.join(dir_name, new_filename)
-        os.rename(original_path, new_path)
-        return new_filename, new_path
-    except Exception as e:
-        return None, str(e)
-
 def render_system_stats():
     cpu = psutil.cpu_percent()
     ram = psutil.virtual_memory().percent
-    c1, c2 = st.columns(2)
-    c1.metric("CPU", f"{cpu}%")
-    c2.metric("RAM", f"{ram}%")
-    st.progress(cpu / 100)
+    st.sidebar.caption(f"SYSTEM HEALTH: CPU {cpu}% | RAM {ram}%")
+    st.sidebar.progress(cpu / 100)
 
-def get_file_hash(file_bytes):
-    return hashlib.md5(file_bytes).hexdigest()
-
-def inject_custom_css(theme):
-    if theme == 'dark':
-        bg_color, card_bg, text_color = "#0e1117", "#262730", "white"
-        accent, secondary = "#00f2fe", "#4facfe"
-        chat_user, chat_ai, border_color = "#2b313e", "#1c1f26", "#464b5c"
-    else:
-        bg_color, card_bg, text_color = "#f0f2f6", "#ffffff", "#31333F"
-        accent, secondary = "#2563eb", "#3b82f6"
-        chat_user, chat_ai, border_color = "#e5e7eb", "#ffffff", "#e5e7eb"
-
-    st.markdown(f"""
-    <style>
-        .stApp {{ background-color: {bg_color}; color: {text_color}; }}
-        div[data-testid="stMetric"] {{
-            background-color: {card_bg}; border: 1px solid {border_color};
-            padding: 15px; border-radius: 10px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
-        }}
-        div[data-testid="stMetricLabel"] {{ color: {text_color} !important; opacity: 0.7; }}
-        div[data-testid="stMetricValue"] {{ color: {text_color} !important; }}
-        .chat-user {{
-            background-color: {chat_user}; color: {text_color}; padding: 15px;
-            border-radius: 15px 15px 0px 15px; margin: 10px 0; text-align: right;
-            border-right: 3px solid {secondary};
-        }}
-        .chat-ai {{
-            background-color: {chat_ai}; color: {text_color}; padding: 15px;
-            border-radius: 15px 15px 15px 0px; margin: 10px 0; border-left: 3px solid {accent};
-            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-        }}
-        .hud-header {{
-            font-family: 'Courier New', monospace; color: {accent};
-            border-bottom: 1px solid {accent}; padding-bottom: 5px; margin-bottom: 15px;
-            letter-spacing: 2px; text-transform: uppercase; font-weight: bold; font-size: 0.9em;
-        }}
-        div.stButton > button {{
-            background: linear-gradient(90deg, {accent} 0%, {secondary} 100%);
-            color: white; border: none; font-weight: bold; transition: transform 0.2s;
-        }}
-        div.stButton > button:hover {{ transform: scale(1.02); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }}
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- NEW: PARALLEL WORKER FUNCTION ---
-def process_single_file(file_info):
-    """
-    This runs inside a thread. It handles C++ and AI for ONE file.
-    """
-    save_path = file_info['path']
-    filename = file_info['name']
-    file_hash = file_info['hash']
+# --- MODAL: UPLOAD DIALOG ---
+@st.dialog("Add New Document")
+def render_upload_modal():
+    st.write("Upload PDF, JPG, or CSV files to your workspace.")
+    uploaded_files = st.file_uploader("Drag & drop files here", accept_multiple_files=True, label_visibility="collapsed")
     
-    try:
-        # CSV Bypass
-        if filename.lower().endswith('.csv'):
-            df = pd.read_csv(save_path)
-            raw_text = df.head(1000).to_markdown(index=False)
-            cpp_data = {"method": "PYTHON_PANDAS_CSV", "debug": None}
-        else:
-            # C++ Engine
-            cpp_binary = "./build/docproc"
-            result = subprocess.run([cpp_binary, save_path], capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                return {"error": f"C++ Failed for {filename}"}
-                
-            cpp_data = json.loads(result.stdout)
-            raw_text = cpp_data.get('content', '')
-        
-        # AI Analysis
-        brain = DocumentBrain()
-        ai_analysis = brain.analyze_document(raw_text)
-        
-        return {
-            "filename": filename,
-            "filepath": save_path,
-            "data": ai_analysis,
-            "raw_text": raw_text,
-            "cpp": cpp_data,
-            "hash": file_hash,
-            "success": True
-        }
-        
-    except Exception as e:
-        return {"error": f"Error in {filename}: {str(e)}", "success": False}
-
-# --- LOGIC: CHAT ---
-def process_chat_query(question):
-    if not st.session_state.get('active_filename'):
-        UIEngine.render_error_toast("System Offline", "No active document context found.")
-        return
-
-    with st.spinner("⚡ Neural Engine Processing..."):
-        try:
+    if uploaded_files:
+        if st.button("🚀 Process Files", use_container_width=True):
+            progress_bar = st.progress(0)
+            status = st.empty()
+            os.makedirs("output", exist_ok=True)
             db = DatabaseEngine()
-            results = db.query_similar_docs(question, filename_filter=st.session_state['active_filename'])
-            context = "\n\n".join(results['documents'][0]) if results['documents'] else ""
             
-            brain = DocumentBrain()
-            if st.session_state.get('current_raw_text'):
-                full_context = f"--- RAW TEXT ---\n{st.session_state['current_raw_text']}"
-            else:
-                full_context = context
+            for i, f in enumerate(uploaded_files):
+                status.text(f"Processing {f.name}...")
+                bytes_data = f.getvalue()
+                file_hash = get_file_hash(bytes_data)
+                save_path = os.path.join("output", f.name)
+                with open(save_path, "wb") as out: out.write(bytes_data)
+                
+                if db.check_file_hash(file_hash):
+                    status.info(f"Skipped {f.name} (Cached)")
+                    continue
 
-            answer = brain.chat_with_documents(full_context, question)
+                try:
+                    # HYBRID PIPELINE (C++ / Pandas)
+                    raw_text = ""
+                    cpp_data = {}
+                    if f.name.lower().endswith('.csv'):
+                        df = pd.read_csv(save_path)
+                        raw_text = df.head(1000).to_markdown(index=False)
+                        cpp_data = {"method": "CSV"}
+                    else:
+                        result = subprocess.run(["./build/docproc", save_path], capture_output=True, text=True)
+                        if result.returncode == 0:
+                            cpp_data = json.loads(result.stdout)
+                            raw_text = cpp_data.get('content', '')
+                        else:
+                            st.error(f"Engine failed on {f.name}")
+                            continue
+                    
+                    # AI Analysis
+                    brain = DocumentBrain()
+                    ai_data = brain.analyze_document(raw_text)
+                    db.save_document(f.name, save_path, raw_text, ai_data, cpp_data, file_hash)
+                    
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                
+                progress_bar.progress((i + 1) / len(uploaded_files))
             
-            st.session_state['chat_history'].append({'role': 'user', 'content': question})
-            st.session_state['chat_history'].append({'role': 'ai', 'content': answer})
-            return True
-        except Exception as e:
-            UIEngine.render_error_toast("Chat Error", str(e))
-            return False
+            status.success("Upload Complete!")
+            time.sleep(1)
+            st.rerun()
+# ========================================================
+# 🛑 END OF MODAL FUNCTION. DO NOT INDENT CODE BELOW THIS.
+# ========================================================
 
-# 3. Sidebar
+# ==========================================
+# SIDEBAR NAVIGATION
+# ==========================================
 with st.sidebar:
-    st.image("https://placehold.co/200x50?text=XENTRO+AI", width=200)
+    st.image("https://placehold.co/200x50/111827/ffffff?text=XENTRO+AI", width=180)
+    st.markdown("### Workspace")
+
+    # THE MENU (Replaces st.radio) - larger text/icons
+    app_mode = option_menu(
+        menu_title="Workspace",
+        options=["Documents", "Chats", "Global Intel", "Risk Audit", "Privacy Vault"],
+        icons=["file-earmark-text", "chat-dots", "globe", "shield-exclamation", "lock"],
+        menu_icon="cast",
+        default_index=0,
+        styles={
+            "container": {"padding": "5px!important", "background-color": "transparent"},
+            # --- INCREASED SIZES ---
+            "icon": {"color": "#200e56", "font-size": "20px"},
+            "nav-link": {
+                "font-size": "18px",
+                "text-align": "left",
+                "margin": "8px",
+                "color": "#99b4e4",
+                "--hover-color": "#262038"
+            },
+            "nav-link-selected": {"background-color": "#262038", "border-left": "4px solid #8b5cf6"},
+        }
+    )
+
     st.markdown("---")
-    
-    mode = st.toggle("🌙 Dark Mode", value=True)
-    st.session_state['theme_mode'] = 'dark' if mode else 'light'
-    inject_custom_css(st.session_state['theme_mode'])
-    
-    st.markdown("---")
-    st.caption("MODE SELECTION")
-    app_mode = st.radio("Select Module", ["🚀 Processor", "🌎 Global Intelligence", "🔍 Anomaly Auditor", "🛡️ Privacy Vault"])
-    
-    st.markdown("---")
-    st.markdown("**🖥️ System Health**")
     render_system_stats()
 
 # ==========================================
-# MAIN ROUTER
+# PAGE 1: DOCUMENTS (Manager + MathGuard)
 # ==========================================
+if app_mode == "Documents":
+    c1, c2 = st.columns([6, 1])
+    c1.title("Documents")
+    if c2.button("➕ Add", use_container_width=True): render_upload_modal()
 
-if app_mode == "🚀 Processor":
-    title_color = "white" if st.session_state['theme_mode'] == 'dark' else "#31333F"
-    st.markdown(f"<h1 style='text-align: center; color: {title_color};'>DOCANALYZER <span style='color: #00f2fe'>PRO</span></h1>", unsafe_allow_html=True)
+    db = DatabaseEngine()
+    try:
+        docs = db.get_recent_documents(limit=50)
+        if not docs:
+            UIEngine.render_empty_state("No documents yet", "Upload a file to start analyzing.")
+        else:
+            filter_text = st.text_input("🔍 Search files...", "")
+            
+            for doc in docs:
+                if filter_text.lower() in doc.filename.lower():
+                    with st.expander(f"📄 {doc.filename}  |  {doc.metadata_json.get('vendor', 'Unknown')}  |  {doc.processed_at.strftime('%Y-%m-%d')}"):
+                        
+                        # MATHGUARD INTEGRATION
+                        st.markdown("**🛡️ MathGuard Audit**")
+                        # Unique key for each button is critical in loops
+                        if st.button(f"Verify Math", key=f"math_{doc.id}"):
+                            brain = DocumentBrain()
+                            audit = brain.verify_math(doc.text_content)
+                            
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Subtotal", f"${audit.get('found_subtotal', 0)}")
+                            m2.metric("Tax", f"${audit.get('found_tax', 0)}")
+                            m3.metric("Calc. Total", f"${audit.get('calculated_total', 0)}")
+                            
+                            if audit.get('is_math_correct'):
+                                st.success("✅ Integrity Verified")
+                            else:
+                                st.error("⚠️ Discrepancy Detected")
+                                st.caption(audit.get('explanation'))
 
-    uploaded_files = st.file_uploader(" ", type=["pdf", "jpg", "png", "csv"], accept_multiple_files=True, label_visibility="collapsed")
+                        st.divider()
+                        st.markdown("**📝 AI Summary**")
+                        st.info(doc.ai_summary)
+                        st.json(doc.metadata_json)
 
-    if uploaded_files:
-        if st.button(f"⚡ PROCESS {len(uploaded_files)} FILES (PARALLEL)", use_container_width=True):
-            st.session_state['batch_results'] = []
-            st.session_state['chat_history'] = []
-            
-            # 1. PREPARE FILES (Main Thread)
-            file_queue = []
-            os.makedirs("output", exist_ok=True)
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            status_text.markdown("`[INIT] Staging files for parallel execution...`")
-            
-            for f in uploaded_files:
-                file_bytes = f.getvalue()
-                save_path = os.path.join("output", f.name)
-                with open(save_path, "wb") as out:
-                    out.write(file_bytes)
+    except Exception as e:
+        st.error(f"Database Error: {e}")
+
+# ==========================================
+# PAGE 2: CHATS (RAG Interface)
+# ==========================================
+elif app_mode == "Chats":
+    st.title("Chats")
+    db = DatabaseEngine()
+    docs = db.get_recent_documents(20)
+    doc_names = [d.filename for d in docs] if docs else []
+    
+    if not doc_names:
+        UIEngine.render_empty_state("No chats available", "Upload documents first.")
+    else:
+        c_list, c_chat = st.columns([1, 2])
+        with c_list:
+            st.caption("CONTEXT")
+            selected_doc = st.selectbox("Active Document:", ["All Documents"] + doc_names)
+            if st.button("🗑️ Clear"): st.session_state['chat_history'] = []; st.rerun()
+
+        with c_chat:
+            chat_box = st.container(height=500)
+            with chat_box:
+                for msg in st.session_state['chat_history']:
+                    align = "right" if msg['role'] == 'user' else "left"
+                    bg = "#f3f4f6" if msg['role'] == 'user' else "#ffffff"
+                    border = "1px solid #10b981" if msg['role'] == 'ai' else "none"
+                    st.markdown(f"<div style='text-align:{align}; background:{bg}; padding:10px; border-radius:10px; margin:5px; border:{border}; display:inline-block;'>{msg['content']}</div>", unsafe_allow_html=True)
+
+            q = st.chat_input("Ask a question...")
+            if q:
+                st.session_state['chat_history'].append({'role': 'user', 'content': q})
+                brain = DocumentBrain()
+                if selected_doc == "All Documents":
+                    results = db.query_similar_docs(q, n_results=5)
+                else:
+                    results = db.query_similar_docs(q, filename_filter=selected_doc)
                 
-                file_queue.append({
-                    "name": f.name,
-                    "path": save_path,
-                    "hash": get_file_hash(file_bytes)
-                })
-
-            # 2. PARALLEL EXECUTION
-            completed_count = 0
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_file = {executor.submit(process_single_file, f): f for f in file_queue}
-                
-                for future in concurrent.futures.as_completed(future_to_file):
-                    result = future.result()
-                    if result.get("success"):
-                        st.session_state['batch_results'].append(result)
-                        try:
-                            db = DatabaseEngine()
-                            db.save_document(
-                                result['filename'], 
-                                result['filepath'], 
-                                result['raw_text'], 
-                                result['data'], 
-                                result['cpp'], 
-                                result['hash']
-                            )
-                        except Exception as e:
-                            print(f"DB Save Warning: {e}")
-                    elif "error" in result:
-                        st.error(result['error'])
-                    
-                    completed_count += 1
-                    progress_bar.progress(completed_count / len(uploaded_files))
-                    status_text.markdown(f"`[PROCESSING] Completed {completed_count}/{len(uploaded_files)}...`")
-
-            status_text.success(f"✅ Parallel Processing Complete! ({len(st.session_state['batch_results'])}/{len(uploaded_files)} success)")
-            
-            if st.session_state['batch_results']:
-                st.session_state['active_filename'] = st.session_state['batch_results'][-1]['filename']
-                st.session_state['current_raw_text'] = st.session_state['batch_results'][-1]['raw_text']
-            else:
-                st.warning("No documents were successfully processed.")
-
-    # DASHBOARD VIEW
-    if st.session_state['batch_results']:
-        results = st.session_state['batch_results']
-        total_docs = len(results)
-        total_value = sum([safe_float(r['data'].get('total_amount')) for r in results])
-        
-        st.markdown("---")
-        col_dash, col_chat = st.columns([1.6, 1])
-        
-        with col_dash:
-            st.markdown("<div class='hud-header'>Batch Telemetry</div>", unsafe_allow_html=True)
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Files", str(total_docs))
-            m2.metric("Total Value", f"${total_value:,.2f}")
-            m3.metric("Engine", "Parallel C++")
-
-            if st.button("📂 Auto-Rename Files"):
-                count = 0
-                for r in results:
-                    old_path = r.get('filepath')
-                    if old_path and os.path.exists(old_path):
-                        _, new_path = smart_rename_file(old_path, r['data'])
-                        if new_path: count += 1
-                st.success(f"Renamed {count} files.")
+                context = "\n".join(results['documents'][0]) if results['documents'] else ""
+                ans = brain.chat_with_documents(context, q)
+                st.session_state['chat_history'].append({'role': 'ai', 'content': ans})
                 st.rerun()
 
-            t1, t2, t3 = st.tabs(["📝 Overview", "📊 Data", "📈 Trends"])
-            with t1:
-                last = results[-1]
-                st.info(f"**Latest ({last['filename']}):** " + last['data'].get('summary', 'No summary.'))
-                
-                # MathGuard
-                with st.status("🛡️ Running MathGuard Audit...", expanded=False) as status:
-                    brain = DocumentBrain()
-                    # Safety check
-                    if not last['raw_text'] or len(last['raw_text']) < 10:
-                        status.update(label="⚠️ MathGuard Skipped: No text extracted", state="error")
-                    else:
-                        audit = brain.verify_math(last['raw_text'])
-                        sub = safe_float(audit.get('found_subtotal'))
-                        disc = safe_float(audit.get('found_discount'))
-                        ship = safe_float(audit.get('found_shipping'))
-                        tax = safe_float(audit.get('found_tax'))
-                        calc = safe_float(audit.get('calculated_total'))
-                        found = safe_float(audit.get('found_total'))
+# ==========================================
+# PAGE 3: GLOBAL INTEL (Cross-Doc Search)
+# ==========================================
+elif app_mode == "Global Intel":
+    st.title("Global Intelligence")
+    st.markdown("Ask questions across **your entire knowledge base**.")
+    
+    user_q = st.text_input("Executive Query:", placeholder="e.g. 'How much did we pay Microsoft last year?'")
+    if user_q:
+        db = DatabaseEngine()
+        results = db.query_global_context(user_q, n_results=10)
+        
+        if results['documents']:
+            context = "\n".join(results['documents'][0])
+            brain = DocumentBrain()
+            with st.spinner("🧠 Analyzing Enterprise Data..."):
+                answer = brain.chat_with_documents(context, user_q)
+            st.info(answer)
+            with st.expander("Source Data"): st.text(context)
+        else:
+            st.warning("No data found.")
 
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Subtotal", f"${sub:,.2f}")
-                        c2.metric("Discount", f"-${disc:,.2f}")
-                        c3.metric("Ship/Tax", f"+${(ship + tax):,.2f}")
-                        c4.metric("Calculated", f"${calc:,.2f}")
-                        
-                        if audit.get('is_math_correct'):
-                            status.update(label="✅ Integrity Verified", state="complete", expanded=True)
-                            st.caption(f"✨ {audit.get('explanation')}")
-                        else:
-                            status.update(label="⚠️ Discrepancy Detected", state="error", expanded=True)
-                            st.error(f"❌ Document says ${found:,.2f}, but math says ${calc:,.2f}")
-                            st.caption(f"Reason: {audit.get('explanation')}")
-                        
-                        with st.expander("🔍 View Raw Logic Input"):
-                            st.code(last['raw_text'][:1000])
-
-            with t2:
-                table_data = []
-                for r in results:
-                    conf = r['data'].get('confidence_score', 0)
-                    icon = "🟢" if conf > 80 else ("🟡" if conf > 50 else "🔴")
-                    table_data.append({
-                        "Risk": icon,
-                        "File": r['filename'],
-                        "Vendor": r['data'].get('vendor'),
-                        "Amount": safe_float(r['data'].get('total_amount'))
-                    })
-                st.dataframe(pd.DataFrame(table_data), use_container_width=True)
-            with t3:
-                if total_value > 0:
-                    chart_data = pd.DataFrame(table_data)
-                    pie = alt.Chart(chart_data).mark_arc(innerRadius=50).encode(
-                        theta=alt.Theta("Amount", stack=True), color="Vendor", tooltip=["Vendor", "Amount"]
-                    )
-                    st.altair_chart(pie, use_container_width=True)
-
-        with col_chat:
-            st.markdown("<div class='hud-header'>Neural Uplink</div>", unsafe_allow_html=True)
-            chat_cont = st.container(height=500)
-            with chat_cont:
-                for msg in st.session_state['chat_history']:
-                    role = "chat-user" if msg['role']=='user' else "chat-ai"
-                    st.markdown(f"<div class='{role}'>{msg['content']}</div>", unsafe_allow_html=True)
-            q = st.chat_input("Ask about the batch...")
-            if q:
-                if process_chat_query(q): st.rerun()
+# ==========================================
+# PAGE 4: RISK AUDIT (Anomaly Detection)
+# ==========================================
+elif app_mode == "Risk Audit":
+    st.title("Risk & Fraud Auditor")
+    db = DatabaseEngine()
+    docs = db.get_recent_documents(50)
+    options = {d.filename: d for d in docs}
+    
+    if not options:
+        UIEngine.render_empty_state("No data to audit", "Upload documents first.")
     else:
-        UIEngine.render_empty_state()
-
-elif app_mode == "🌎 Global Intelligence":
-    def render_global_intelligence():
-        st.markdown(f"<h2 style='color: #00f2fe;'>🌎 GLOBAL INTELLIGENCE</h2>", unsafe_allow_html=True)
-        st.markdown("Ask questions across **all** uploaded contracts and invoices.")
-        user_q = st.text_input("Executive Query:", placeholder="e.g. 'How much did we pay Microsoft in total last year?'")
-        if user_q:
-            db = DatabaseEngine()
-            results = db.query_global_context(user_q, n_results=10)
-            if results['documents']:
-                context = "\n".join(results['documents'][0])
-                brain = DocumentBrain()
-                with st.spinner("🧠 Cross-referencing Knowledge Base..."):
-                    answer = brain.chat_with_documents(context, user_q)
-                st.markdown("### 🤖 Executive Summary")
-                st.info(answer)
-                with st.expander("View Source Documents"):
-                    st.text(context)
-            else:
-                st.warning("No relevant data found.")
-    render_global_intelligence()
-
-elif app_mode == "🔍 Anomaly Auditor":
-    def render_anomaly_auditor():
-        st.markdown(f"<h2 style='color: #00f2fe;'>🔍 ANOMALY AUDITOR</h2>", unsafe_allow_html=True)
-        
-        # Database Inspector
-        with st.expander("🕵️ View All Known Vendors (Debug Database)"):
-            try:
-                db = DatabaseEngine()
-                vendor_counts = db.get_all_vendors()
-                if vendor_counts:
-                    st.dataframe(pd.DataFrame(list(vendor_counts.items()), columns=["Vendor Name", "Invoice Count"]), use_container_width=True)
-                else:
-                    st.info("Database is empty.")
-            except Exception as e:
-                st.error(f"Could not inspect DB: {e}")
-
-        if not st.session_state['batch_results']:
-            st.info("Upload documents in 'Processor' first.")
-            return
-            
-        options = {r['filename']: r for r in st.session_state['batch_results']}
         selected_file = st.selectbox("Select Invoice to Audit:", list(options.keys()))
-        
-        if st.button("⚡ RUN FORENSIC CHECK"):
-            target_doc = options[selected_file]
-            vendor = target_doc['data'].get('vendor', '')
-            current_filename = target_doc['filename']
+        if st.button("⚡ Run Forensic Check"):
+            target = options[selected_file]
+            vendor = target.metadata_json.get('vendor', '')
             
-            with st.spinner(f"🔍 Searching historical records for '{vendor}'..."):
-                db = DatabaseEngine()
-                history = db.get_vendor_history(vendor, exclude_filename=current_filename)
+            with st.spinner("🔍 Checking Historical Patterns..."):
+                history = db.get_vendor_history(vendor, exclude_filename=target.filename)
                 brain = DocumentBrain()
-                audit_result = brain.audit_document(target_doc['raw_text'], history)
+                audit = brain.audit_document(target.text_content, history)
                 
-                r_col1, r_col2, r_col3 = st.columns(3)
-                score = audit_result.get('risk_score', 0)
-                r_col1.metric("Risk Score", f"{score}/100")
-                r_col2.metric("Risk Level", audit_result.get('risk_level', 'UNKNOWN'))
-                r_col3.metric("AI Verdict", audit_result.get('recommendation', 'Review'))
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Risk Score", f"{audit.get('risk_score')}/100")
+                c2.metric("Level", audit.get('risk_level'))
+                c3.metric("Action", audit.get('recommendation'))
                 
-                st.markdown("---")
-                st.markdown("### 🚩 Detected Flags")
-                for flag in audit_result.get('flags', []):
-                    st.error(f"• {flag}")
-                
-                with st.expander("View Historical Context"):
-                    st.write(f"Found {len(history)} past invoices for {vendor}:")
-                    st.json(history)
-    render_anomaly_auditor()
+                st.error(f"Flags: {audit.get('flags')}")
+                with st.expander("Historical Baseline"): st.json(history)
 
-elif app_mode == "🛡️ Privacy Vault":
-    def render_privacy_vault():
-        st.markdown(f"<h2 style='color: #00f2fe;'>🛡️ PRIVACY VAULT</h2>", unsafe_allow_html=True)
-        if not st.session_state['batch_results']:
-            st.info("Upload documents in 'Processor' first.")
-            return
-        
-        st.markdown("### 🔒 GDPR/PII Auto-Redaction")
-        options = {r['filename']: r for r in st.session_state['batch_results']}
-        selected_file = st.selectbox("Select Document to Sanitize:", list(options.keys()))
-        
-        if st.button("⚡ GENERATE PUBLIC VERSION"):
-            target_doc = options[selected_file]
-            original_data = target_doc['data']
-            
-            with st.spinner("🕵️ Scrubbing sensitive data..."):
+# ==========================================
+# PAGE 5: PRIVACY VAULT (Redaction)
+# ==========================================
+elif app_mode == "Privacy Vault":
+    st.title("Privacy Vault (GDPR)")
+    db = DatabaseEngine()
+    docs = db.get_recent_documents(50)
+    options = {d.filename: d for d in docs}
+    
+    if not options:
+        UIEngine.render_empty_state("Vault Empty", "Upload documents first.")
+    else:
+        selected_file = st.selectbox("Select Document to Redact:", list(options.keys()))
+        if st.button("🔒 Generate Public Version"):
+            target = options[selected_file]
+            with st.spinner("🕵️ Scrubbing PII..."):
                 brain = DocumentBrain()
-                redacted_data = brain.redact_sensitive_data(original_data)
+                redacted = brain.redact_sensitive_data(target.metadata_json)
                 
                 c1, c2 = st.columns(2)
-                with c1:
-                    st.subheader("🔴 Original (Private)")
-                    st.json(original_data)
-                with c2:
-                    st.subheader("🟢 Sanitized (Public)")
-                    st.json(redacted_data)
+                with c1: 
+                    st.markdown("**Original**")
+                    st.json(target.metadata_json)
+                with c2: 
+                    st.markdown("**Sanitized**")
+                    st.json(redacted)
                 
-                st.markdown("---")
-                st.download_button(
-                    "📥 Download Safe JSON", 
-                    data=json.dumps(redacted_data, indent=2), 
-                    file_name=f"SAFE_{selected_file}.json"
-                )
-    render_privacy_vault()
+                st.download_button("Download JSON", data=json.dumps(redacted), file_name="safe.json")
